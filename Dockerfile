@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     unzip \
     zip \
+    curl \
+    sqlite3 \
     libsqlite3-dev \
     libpng-dev \
     libjpeg-dev \
@@ -18,13 +20,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && docker-php-ext-install -j$(nproc) gd pdo pdo_sqlite zip \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Enable Apache mod_rewrite (required by Laravel/BookStack)
-RUN a2enmod rewrite
+# Enable required Apache modules
+RUN a2enmod rewrite headers env
 
-# Set Apache DocumentRoot to BookStack's /public folder
+# Set Apache DocumentRoot to BookStack's /public folder and allow .htaccess
 ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/000-default.conf \
-    && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+    && echo '<Directory /var/www/html/public>\n\
+        AllowOverride All\n\
+        Require all granted\n\
+    </Directory>' > /etc/apache2/conf-available/public-dir.conf \
+    && a2enconf public-dir
 
 # Set working directory
 WORKDIR /var/www/html
@@ -35,15 +41,17 @@ COPY . /var/www/html
 # Install Composer (from official Composer image)
 COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
 
-# Install PHP dependencies (no dev packages)
-RUN composer install --no-dev --optimize-autoloader --no-interaction
+# Install PHP dependencies & clear caches
+RUN composer install --no-dev --optimize-autoloader --no-interaction \
+    && php artisan config:clear \
+    && php artisan cache:clear \
+    && php artisan view:clear
 
 # Fix Laravel/BookStack folder permissions
 RUN chown -R www-data:www-data storage bootstrap/cache database \
     && chmod -R 775 storage bootstrap/cache database
 
 # ✅ Fix HTTPS redirect loop behind Render proxy
-# This ensures Laravel detects HTTPS correctly via Render's X-Forwarded-Proto header
 RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-available/render-https.conf \
     && a2enconf render-https
 
