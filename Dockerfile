@@ -54,7 +54,9 @@ RUN mkdir -p storage/framework/sessions \
 
 # ✅ Ensure HTTPS detection behind Render’s proxy
 RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-available/render-https.conf \
+    && echo 'RequestHeader set X-Forwarded-Proto "https"' >> /etc/apache2/conf-available/render-https.conf \
     && a2enconf render-https
+
 
 # ✅ Clear any cached configs and views before starting
 RUN php artisan optimize:clear
@@ -68,4 +70,4 @@ RUN echo "=== SESSION DIRECTORY CHECK ===" \
 EXPOSE 80
 
 # ✅ Start Apache and re-cache Laravel configuration at container startup
-CMD php artisan config:clear && php artisan cache:clear && php artisan view:clear && php artisan config:cache && apache2-foreground
+CMD php artisan config:clear && php artisan cache:clear && php artisan view:clear && apache2-foreground
