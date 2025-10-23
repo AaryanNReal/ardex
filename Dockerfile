@@ -48,10 +48,9 @@ RUN composer install --no-dev --optimize-autoloader --no-interaction \
     && php artisan view:clear
 
 # Fix Laravel/BookStack folder permissions and session directory
-RUN chown -R www-data:www-data storage bootstrap/cache database \
-    && chmod -R 775 storage bootstrap/cache database \
-    && mkdir -p storage/framework/sessions \
-    && chmod -R 775 storage/framework/sessions
+RUN mkdir -p storage/framework/sessions \
+    && chown -R www-data:www-data storage bootstrap/cache database \
+    && chmod -R 775 storage bootstrap/cache database storage/framework/sessions
 
 # ✅ Ensure HTTPS detection behind Render’s proxy
 RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-available/render-https.conf \
@@ -59,6 +58,11 @@ RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-availa
 
 # ✅ Clear any cached configs and views before starting
 RUN php artisan optimize:clear
+
+# 🧪 TEMP DEBUG: Verify session directory and permissions
+RUN echo "=== SESSION DIRECTORY CHECK ===" \
+    && ls -la storage/framework/sessions || true \
+    && echo "==============================="
 
 # Expose HTTP port for Render
 EXPOSE 80
