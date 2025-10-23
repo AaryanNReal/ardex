@@ -59,4 +59,4 @@ RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-availa
 EXPOSE 80
 
 # Start Apache server
-CMD php artisan config:clear && php artisan cache:clear && php artisan view:clear && apache2-foreground
+CMD php artisan config:clear && php artisan cache:clear && php artisan view:clear && php artisan config:cache && apache2-foreground
