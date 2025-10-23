@@ -385,3 +385,12 @@ Route::get('/session-test', function () {
     session(['test' => 'BookStack session works!']);
     return 'Session stored: ' . session('test');
 });
+// 🧪 DEBUG: Session persistence test routes (temporary)
+Route::get('/debug-set', function () {
+    session(['debug_user' => 'active']);
+    return response('Session value set. Now visit /debug-check')->header('Cache-Control', 'no-store');
+});
+
+Route::get('/debug-check', function () {
+    return response('Session value: ' . session('debug_user', 'missing'))->header('Cache-Control', 'no-store');
+});
