@@ -47,16 +47,21 @@ RUN composer install --no-dev --optimize-autoloader --no-interaction \
     && php artisan cache:clear \
     && php artisan view:clear
 
-# Fix Laravel/BookStack folder permissions
+# Fix Laravel/BookStack folder permissions and session directory
 RUN chown -R www-data:www-data storage bootstrap/cache database \
-    && chmod -R 775 storage bootstrap/cache database
+    && chmod -R 775 storage bootstrap/cache database \
+    && mkdir -p storage/framework/sessions \
+    && chmod -R 775 storage/framework/sessions
 
-# ✅ Fix HTTPS redirect loop behind Render proxy
+# ✅ Ensure HTTPS detection behind Render’s proxy
 RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-available/render-https.conf \
     && a2enconf render-https
+
+# ✅ Clear any cached configs and views before starting
+RUN php artisan optimize:clear
 
 # Expose HTTP port for Render
 EXPOSE 80
 
-# Start Apache server
+# ✅ Start Apache and re-cache Laravel configuration at container startup
 CMD php artisan config:clear && php artisan cache:clear && php artisan view:clear && php artisan config:cache && apache2-foreground
