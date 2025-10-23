@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Enable Apache mod_rewrite (required by Laravel/BookStack)
 RUN a2enmod rewrite
 
-# Set Apache DocumentRoot to BookStack's public directory
+# Set Apache DocumentRoot to BookStack's /public folder
 ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/000-default.conf \
     && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
@@ -29,10 +29,10 @@ RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-av
 # Set working directory
 WORKDIR /var/www/html
 
-# Copy project files
+# Copy project files into the container
 COPY . /var/www/html
 
-# Install Composer (copied from official Composer image)
+# Install Composer (from official Composer image)
 COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
 
 # Install PHP dependencies (no dev packages)
@@ -41,6 +41,11 @@ RUN composer install --no-dev --optimize-autoloader --no-interaction
 # Fix Laravel/BookStack folder permissions
 RUN chown -R www-data:www-data storage bootstrap/cache database \
     && chmod -R 775 storage bootstrap/cache database
+
+# ✅ Fix HTTPS redirect loop behind Render proxy
+# This ensures Laravel detects HTTPS correctly via Render's X-Forwarded-Proto header
+RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-available/render-https.conf \
+    && a2enconf render-https
 
 # Expose HTTP port for Render
 EXPOSE 80
