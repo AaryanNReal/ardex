@@ -381,3 +381,7 @@ Route::get('/theme/{theme}/{path}', [ThemeController::class, 'publicFile'])
     ->where('path', '.*$');
 
 Route::fallback([MetaController::class, 'notFound'])->name('fallback');
+Route::get('/session-test', function () {
+    session(['test' => 'BookStack session works!']);
+    return 'Session stored: ' . session('test');
+});
