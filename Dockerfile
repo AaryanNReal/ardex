@@ -1,39 +1,42 @@
-# Use official PHP 8.2 with Apache
+# Use PHP 8.2 Apache image (Debian Bookworm base)
 FROM php:8.2-apache
 
-# Update system and install required dependencies
-RUN apt-get update && apt-get install -y \
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     unzip \
     zip \
     sqlite3 \
     libpng-dev \
-    libjpeg-dev \
+    libjpeg62-turbo-dev \
     libfreetype6-dev \
     libzip-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install gd pdo pdo_sqlite zip \
-    && rm -rf /var/lib/apt/lists/*
+    && docker-php-ext-install -j$(nproc) gd pdo pdo_sqlite zip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Enable Apache mod_rewrite for Laravel/BookStack routing
+# Enable Apache mod_rewrite
 RUN a2enmod rewrite
 
 # Set working directory
 WORKDIR /var/www/html
 
-# Copy the application code to the container
+# Copy project files into the container
 COPY . /var/www/html
 
-# Install Composer (from official image)
+# Install Composer
 COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
 
 # Install PHP dependencies
 RUN composer install --no-dev --optimize-autoloader --no-interaction
 
-# Fix permissions
+# Adjust permissions
 RUN chown -R www-data:www-data /var/www/html && chmod -R 755 /var/www/html
 
-# Expose port 80 (Render uses this automatically)
+# Expose web port
 EXPOSE 80
 
 # Start Apache
