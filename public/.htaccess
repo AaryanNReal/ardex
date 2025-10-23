@@ -4,11 +4,15 @@
     </IfModule>
 
     RewriteEngine On
-    RewriteBase /bookstack/
-	
+    RewriteBase /
+
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # Ensure HTTPS works correctly behind Render’s proxy
+    RewriteCond %{HTTP:X-Forwarded-Proto} =http
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
     # Redirect Trailing Slashes If Not A Folder...
     RewriteCond %{REQUEST_FILENAME} !-d
