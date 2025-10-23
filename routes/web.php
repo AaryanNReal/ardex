@@ -401,3 +401,13 @@ Route::get('/auth-check', function () {
         return '❌ Not authenticated';
     }
 });
+// Debug route to check session state
+Route::get('/debug-session', function () {
+    return response()->json([
+        'session' => session()->all(),
+        'authenticated' => auth()->check(),
+        'user' => auth()->user(),
+        'cookies' => request()->cookies->all(),
+        'url' => url()->current(),
+    ]);
+});
