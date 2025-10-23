@@ -394,3 +394,10 @@ Route::get('/debug-set', function () {
 Route::get('/debug-check', function () {
     return response('Session value: ' . session('debug_user', 'missing'))->header('Cache-Control', 'no-store');
 });
+Route::get('/auth-check', function () {
+    if (auth()->check()) {
+        return '✅ Authenticated as: ' . auth()->user()->email;
+    } else {
+        return '❌ Not authenticated';
+    }
+});
