@@ -1,46 +1,54 @@
+# Use PHP 8.2 with Apache (Debian Bookworm base)
 FROM php:8.2-apache
 
-# Avoid interactive apt prompts
+# Avoid interactive prompts during package installs
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install required dependencies & libraries
+# Install required system dependencies and SQLite dev headers
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git unzip zip curl sqlite3 pkg-config \
-    libfreetype6-dev libjpeg62-turbo-dev libpng-dev libzip-dev libonig-dev \
+    git \
+    unzip \
+    zip \
+    libsqlite3-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
+    libzip-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install -j$(nproc) gd pdo pdo_sqlite zip mbstring \
-    && a2enmod rewrite headers env \
-    && rm -rf /var/lib/apt/lists/*
+    && docker-php-ext-install -j$(nproc) gd pdo pdo_sqlite zip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Enable Apache mod_rewrite (required by Laravel/BookStack)
+RUN a2enmod rewrite
+
+# Set Apache DocumentRoot to BookStack's /public folder
+ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/000-default.conf \
+    && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
 
 # Set working directory
 WORKDIR /var/www/html
 
-# Copy project files
+# Copy project files into the container
 COPY . /var/www/html
 
-# Set proper permissions for Laravel
-RUN chown -R www-data:www-data /var/www/html && chmod -R 755 /var/www/html
+# Install Composer (from official Composer image)
+COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
 
-# Ensure writable directories exist
-RUN mkdir -p storage bootstrap/cache && chmod -R 775 storage bootstrap/cache
+# Install PHP dependencies (no dev packages)
+RUN composer install --no-dev --optimize-autoloader --no-interaction
 
-# Clear cached configurations (important for Render)
-RUN php artisan config:clear || true && \
-    php artisan cache:clear || true && \
-    php artisan view:clear || true
+# Fix Laravel/BookStack folder permissions
+RUN chown -R www-data:www-data storage bootstrap/cache database \
+    && chmod -R 775 storage bootstrap/cache database
 
-# Allow .htaccess overrides for BookStack
-RUN echo "<Directory /var/www/html/public>\n\
-    AllowOverride All\n\
-</Directory>" > /etc/apache2/conf-available/allowoverride.conf \
-    && a2enconf allowoverride
+# ✅ Fix HTTPS redirect loop behind Render proxy
+# This ensures Laravel detects HTTPS correctly via Render's X-Forwarded-Proto header
+RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-available/render-https.conf \
+    && a2enconf render-https
 
-# Fix HTTPS redirect issues on Render
-RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-available/render-https.conf && \
-    a2enconf render-https
-
-# Expose HTTP port
+# Expose HTTP port for Render
 EXPOSE 80
 
-# Start Apache
+# Start Apache server
 CMD ["apache2-foreground"]
