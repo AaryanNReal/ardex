@@ -6,16 +6,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install required system dependencies and SQLite dev headers
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    unzip \
-    zip \
-    curl \
-    sqlite3 \
-    libsqlite3-dev \
-    libpng-dev \
-    libjpeg-dev \
-    libfreetype6-dev \
-    libzip-dev \
+    git unzip zip curl sqlite3 \
+    libsqlite3-dev libpng-dev libjpeg-dev libfreetype6-dev libzip-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j$(nproc) gd pdo pdo_sqlite zip \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -41,11 +33,8 @@ COPY . /var/www/html
 # Install Composer (from official Composer image)
 COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
 
-# Install PHP dependencies & clear caches
-RUN composer install --no-dev --optimize-autoloader --no-interaction \
-    && php artisan config:clear \
-    && php artisan cache:clear \
-    && php artisan view:clear
+# Install PHP dependencies
+RUN composer install --no-dev --optimize-autoloader --no-interaction
 
 # Fix Laravel/BookStack folder permissions and session directory
 RUN mkdir -p storage/framework/sessions \
@@ -57,17 +46,11 @@ RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-availa
     && echo 'RequestHeader set X-Forwarded-Proto "https"' >> /etc/apache2/conf-available/render-https.conf \
     && a2enconf render-https
 
-
-# ✅ Clear any cached configs and views before starting
-RUN php artisan optimize:clear
-
-# 🧪 TEMP DEBUG: Verify session directory and permissions
-RUN echo "=== SESSION DIRECTORY CHECK ===" \
-    && ls -la storage/framework/sessions || true \
-    && echo "==============================="
-
-# Expose HTTP port for Render
-EXPOSE 80
-
-# ✅ Start Apache and re-cache Laravel configuration at container startup
-CMD php artisan config:clear && php artisan cache:clear && php artisan view:clear && apache2-foreground
+# ✅ Force Laravel to re-read environment vars & APP_KEY on start
+# This step is critical for fixing session decryption issues
+CMD php artisan config:clear \
+    && php artisan cache:clear \
+    && php artisan view:clear \
+    && php artisan route:clear \
+    && php artisan config:cache \
+    && apache2-foreground
