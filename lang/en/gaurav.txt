@@ -1,0 +1,430 @@
+// ==UserScript==
+// @name         Lionbridge Bulk Order Canceller — Improved Logging
+// @namespace    http://tampermonkey.net/
+// @version      1.1
+// @description  Bulk-cancel orders on fworders.lionbridge.com with improved logging and safer DOM handling.
+// @match        https://fworders.lionbridge.com/Orders/Details/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  /* ============================
+     CONFIG / STORAGE KEYS
+     ============================ */
+  const KEY_IDS = 'lb_bulk_cancel_ids_v1';
+  const KEY_REASON = 'lb_bulk_cancel_reason_v1';
+  const KEY_INDEX = 'lb_bulk_cancel_index_v1';
+
+  /* ============================
+     Logging helpers
+     ============================ */
+  function log(...args) {
+    console.log('LB:', ...args);
+  }
+  function logWarn(...args) {
+    console.warn('LB:', ...args);
+  }
+  function logError(...args) {
+    console.error('LB:', ...args);
+    setPanelStatus('Error (check console)');
+  }
+
+  /* ============================
+     Small DOM helpers
+     ============================ */
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  /* ============================
+     UI: Panel creation
+     ============================ */
+  function createPanelIfMissing() {
+    if (document.getElementById('lbBulkCancelPanel')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'lbBulkCancelPanel';
+    panel.style.cssText = [
+      'position: fixed',
+      'top: 12px',
+      'right: 12px',
+      'width: 360px',
+      'z-index: 2147483647',
+      'background: rgba(255,255,255,0.98)',
+      'border: 1px solid rgba(0,0,0,0.12)',
+      'padding: 10px',
+      'font-family: Arial, sans-serif',
+      'font-size: 13px',
+      'color: #111',
+      'border-radius: 6px',
+      'box-shadow: 0 8px 24px rgba(0,0,0,0.12)'
+    ].join(';');
+
+    panel.innerHTML = `
+      <div style="font-weight:600;margin-bottom:6px">Bulk Cancel — Controls</div>
+      <label style="font-size:12px;display:block">Order IDs (one per line or comma separated; full URLs allowed)</label>
+      <textarea id="lbIds" rows="4" style="width:100%;box-sizing:border-box;margin:6px 0"></textarea>
+      <label style="font-size:12px;display:block">Cancellation reason (applies to all)</label>
+      <textarea id="lbReason" rows="2" style="width:100%;box-sizing:border-box;margin:6px 0"></textarea>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button id="lbSaveBtn" style="flex:1">Save</button>
+        <button id="lbStartBtn" style="flex:1">Start</button>
+        <button id="lbStopBtn" style="flex:1">Stop</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button id="lbClearBtn" style="flex:1">Clear</button>
+        <button id="lbResetProgressBtn" style="flex:1">Reset Progress</button>
+      </div>
+      <div id="lbStatus" style="margin-top:8px;font-size:12px;color:#333;min-height:20px"></div>
+      <div id="lbConsoleMini" style="margin-top:6px;font-size:11px;color:#666;max-height:90px;overflow:auto;background:#fafafa;border:1px solid #eee;padding:6px;border-radius:4px"></div>
+    `;
+
+    document.body.appendChild(panel);
+
+    // load saved
+    $('#lbIds').value = localStorage.getItem(KEY_IDS) || '';
+    $('#lbReason').value = localStorage.getItem(KEY_REASON) || '';
+
+    // attach handlers
+    $('#lbSaveBtn').addEventListener('click', () => {
+      localStorage.setItem(KEY_IDS, $('#lbIds').value.trim());
+      localStorage.setItem(KEY_REASON, $('#lbReason').value.trim());
+      appendMiniLog('Saved IDs & reason.');
+      setPanelStatus('Saved.');
+      log('Saved IDs & reason to localStorage.');
+    });
+
+    $('#lbStartBtn').addEventListener('click', () => {
+      localStorage.setItem(KEY_IDS, $('#lbIds').value.trim());
+      localStorage.setItem(KEY_REASON, $('#lbReason').value.trim());
+      appendMiniLog('Start pressed.');
+      setPanelStatus('Starting...');
+      startProcess().catch(err => {
+        logError('startProcess error', err);
+      });
+    });
+
+    $('#lbStopBtn').addEventListener('click', () => {
+      stopRequested = true;
+      appendMiniLog('Stop requested by user.');
+      setPanelStatus('Stop requested.');
+      log('Stop requested by user.');
+    });
+
+    $('#lbClearBtn').addEventListener('click', () => {
+      if (!confirm('Clear saved IDs, reason and index?')) return;
+      localStorage.removeItem(KEY_IDS);
+      localStorage.removeItem(KEY_REASON);
+      localStorage.removeItem(KEY_INDEX);
+      $('#lbIds').value = '';
+      $('#lbReason').value = '';
+      appendMiniLog('Cleared data.');
+      setPanelStatus('Cleared.');
+      log('Cleared saved data.');
+    });
+
+    $('#lbResetProgressBtn').addEventListener('click', () => {
+      localStorage.removeItem(KEY_INDEX);
+      appendMiniLog('Progress index reset.');
+      setPanelStatus('Progress reset.');
+      log('Progress index reset.');
+    });
+  }
+
+  function setPanelStatus(msg) {
+    const s = document.getElementById('lbStatus');
+    if (s) s.textContent = msg;
+  }
+
+  function appendMiniLog(msg) {
+    const el = document.getElementById('lbConsoleMini');
+    if (!el) return;
+    const time = new Date().toLocaleTimeString();
+    el.innerHTML = `<div>[${time}] ${escapeHtml(String(msg))}</div>` + el.innerHTML;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  /* ============================
+     Queue / parsing utilities
+     ============================ */
+  function parseIds(raw) {
+    if (!raw) return [];
+    // split by comma, whitespace or newline tokens, but keep full numeric strings
+    return raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean).map(s => {
+      // if it's a URL with ending digits, extract final number
+      const m = s.match(/(\d+)(?!.*\d)/);
+      return m ? m[1] : s;
+    });
+  }
+
+  function safeGetIndex() {
+    const v = localStorage.getItem(KEY_INDEX);
+    const n = Number(v);
+    return (Number.isInteger(n) && n >= 0) ? n : 0;
+  }
+  function setIndex(n) {
+    localStorage.setItem(KEY_INDEX, String(n));
+  }
+
+  /* ============================
+     DOM Waiting helpers
+     ============================ */
+  async function waitForSelector(selector, timeoutMs = 10000, pollInterval = 250) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const el = document.querySelector(selector);
+        if (el) return el;
+      } catch (e) {
+        // continue
+      }
+      await sleep(pollInterval);
+    }
+    return null;
+  }
+
+  async function waitForAnySelector(selectors, timeoutMs = 10000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) return el;
+      }
+      await sleep(250);
+    }
+    return null;
+  }
+
+  /* ============================
+     Core flow: navigation + processing
+     ============================ */
+  let stopRequested = false;
+
+  function getCurrentOrderIdFromUrl() {
+    const m = location.pathname.match(/\/Orders\/Details\/(\d+)/i);
+    return m ? m[1] : null;
+  }
+
+  function navigateToId(id) {
+    const url = `https://fworders.lionbridge.com/Orders/Details/${id}`;
+    log('Navigating to', url);
+    window.location.href = url;
+  }
+
+  async function startProcess() {
+    try {
+      createPanelIfMissing();
+
+      const rawIds = localStorage.getItem(KEY_IDS) || '';
+      const reason = (localStorage.getItem(KEY_REASON) || '').trim();
+      const ids = parseIds(rawIds);
+
+      log('startProcess called. ids count =', ids.length, 'reason present?', !!reason);
+
+      if (!ids.length) {
+        setPanelStatus('No order IDs saved. Enter IDs and Save or Start.');
+        appendMiniLog('No order IDs saved.');
+        return;
+      }
+      if (!reason) {
+        setPanelStatus('No reason saved. Enter reason and Save or Start.');
+        appendMiniLog('No reason saved.');
+        return;
+      }
+
+      stopRequested = false;
+      let idx = safeGetIndex();
+      if (idx >= ids.length) idx = 0;
+
+      const currentId = getCurrentOrderIdFromUrl();
+      log('currentId from URL:', currentId, 'expected next id:', ids[idx]);
+
+      // If we are already on the expected page, process here
+      if (currentId && currentId === ids[idx]) {
+        appendMiniLog(`Processing on current page: ${currentId}`);
+        setPanelStatus(`Processing ${currentId} (${idx+1}/${ids.length})`);
+        await processCancelForCurrentPage(reason, ids, idx);
+      } else {
+        // navigate to the expected id page
+        appendMiniLog(`Opening order ${ids[idx]} (index ${idx+1}/${ids.length})`);
+        setPanelStatus(`Opening ${ids[idx]}...`);
+        navigateToId(ids[idx]);
+      }
+    } catch (err) {
+      logError('startProcess exception', err);
+    }
+  }
+
+  async function processCancelForCurrentPage(reason, ids, idx) {
+    try {
+      const orderId = getCurrentOrderIdFromUrl();
+      if (!orderId) {
+        appendMiniLog('Not on an order details page; aborting.');
+        setPanelStatus('Not an order details page.');
+        log('Not an order details page - cannot process.');
+        return;
+      }
+
+      log('Processing cancel flow for order', orderId, 'index', idx);
+      appendMiniLog('Looking for Cancel button...');
+
+      // find cancel element: prefer id #cancelOrder or href containing Cancel/<id>, fallback to text match
+      let cancelEl = await waitForAnySelector(['#cancelOrder', `a[href*="/Orders/Details/Cancel/${orderId}"]`, `button[id*="cancel"]`], 5000);
+
+      if (!cancelEl) {
+        // try searching by text
+        const candidates = Array.from(document.querySelectorAll('a,button'));
+        cancelEl = candidates.find(e => (e.textContent || '').trim().toLowerCase().includes('cancel order') || (e.getAttribute && (''+e.getAttribute('href') || '').includes(`/Orders/Details/Cancel/${orderId}`)));
+      }
+
+      if (!cancelEl) {
+        appendMiniLog('Cancel button not found on page.');
+        setPanelStatus('Cancel button not found.');
+        logWarn('Cancel button not found for order', orderId);
+        // increment index so user can proceed (optionally) or stop
+        // Do NOT auto-skip by default; instead set status and stop.
+        return;
+      }
+
+      log('Cancel element found:', cancelEl);
+      appendMiniLog('Clicking Cancel button...');
+      setPanelStatus('Clicking Cancel button...');
+      // click to open modal
+      cancelEl.click();
+
+      // wait for the modal textarea to appear
+      const textarea = await waitForSelector('#cancellationReason', 8000);
+      if (!textarea) {
+        appendMiniLog('Cancellation textarea not found after clicking Cancel.');
+        setPanelStatus('Textarea not found.');
+        logWarn('Cancellation textarea #cancellationReason not found for order', orderId);
+        return;
+      }
+
+      // Fill reason
+      try {
+        textarea.focus();
+        textarea.value = reason;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        appendMiniLog('Filled reason.');
+        log('Filled cancellation reason for order', orderId);
+      } catch (e) {
+        logError('Error filling textarea', e);
+      }
+
+      // find confirm button
+      let confirmBtn = document.querySelector('#btnCancelOrder') || Array.from(document.querySelectorAll('button')).find(b => (b.id === 'btnCancelOrder' || (b.textContent || '').trim().toLowerCase().includes('cancel order')));
+      if (!confirmBtn) {
+        appendMiniLog('Confirm Cancel button not found.');
+        setPanelStatus('Confirm button not found.');
+        logWarn('Confirm cancel button not found for order', orderId);
+        return;
+      }
+
+      appendMiniLog('Clicking confirm Cancel...');
+      setPanelStatus('Submitting cancellation...');
+      log('Clicking confirm button', confirmBtn);
+      confirmBtn.click();
+
+      // wait for some time to let server process. Also watch for navigation change.
+      const start = Date.now();
+      const maxWait = 8000;
+      let navigated = false;
+      while (Date.now() - start < maxWait) {
+        if (getCurrentOrderIdFromUrl() !== orderId) {
+          navigated = true;
+          break;
+        }
+        await sleep(300);
+      }
+
+      appendMiniLog(`Submitted. navigated=${navigated}`);
+      setPanelStatus(`Submitted cancellation for ${orderId}`);
+
+      // mark progress
+      const nextIdx = idx + 1;
+      setIndex(nextIdx);
+      log('Marked index ->', nextIdx);
+
+      if (stopRequested) {
+        appendMiniLog('Stopped by user after submission.');
+        setPanelStatus('Stopped by user.');
+        return;
+      }
+
+      const idsRemaining = ids.slice(nextIdx);
+      if (idsRemaining.length > 0) {
+        appendMiniLog(`Moving to next: ${idsRemaining[0]} (index ${nextIdx+1}/${ids.length})`);
+        setPanelStatus(`Moving to next: ${idsRemaining[0]}`);
+        await sleep(700); // small pause for user visibility
+        navigateToId(idsRemaining[0]);
+      } else {
+        appendMiniLog('All done.');
+        setPanelStatus('All done.');
+        localStorage.removeItem(KEY_INDEX);
+        log('Queue finished.');
+      }
+
+    } catch (err) {
+      logError('processCancelForCurrentPage caught', err);
+    }
+  }
+
+  /* ============================
+     Auto-run / initialization
+     ============================ */
+  // Always attempt to create the panel when the script runs
+  try {
+    createPanelIfMissing();
+    appendMiniLog('Script loaded. ' + location.href);
+    log('Userscript loaded on', location.href);
+  } catch (e) {
+    logError('Failed to create panel at startup', e);
+  }
+
+  // If we land on a page that is the expected next id, auto-start small check
+  (async function autoCheckOnLoad() {
+    await sleep(400); // let page settle
+    try {
+      const ids = parseIds(localStorage.getItem(KEY_IDS) || '');
+      const reason = (localStorage.getItem(KEY_REASON) || '').trim();
+      if (!ids.length || !reason) {
+        setPanelStatus('Enter order IDs and reason, then Save or Start.');
+        return;
+      }
+      const idx = safeGetIndex();
+      if (idx >= ids.length) {
+        setPanelStatus('Queue finished. Reset Progress to run again.');
+        return;
+      }
+      const expectedId = ids[idx];
+      const currentId = getCurrentOrderIdFromUrl();
+      if (currentId && currentId === expectedId) {
+        appendMiniLog(`Auto-starting processing for ${currentId}`);
+        setPanelStatus(`Auto-processing ${currentId}...`);
+        startProcess().catch(err => logError('auto start error', err));
+      } else {
+        setPanelStatus(`Ready. Next: ${expectedId} (index ${idx+1}/${ids.length})`);
+      }
+    } catch (e) {
+      logError('autoCheckOnLoad error', e);
+    }
+  })();
+
+  // Robustness: if UI is removed (site JS), re-add it
+  const observer = new MutationObserver(() => {
+    if (!document.getElementById('lbBulkCancelPanel')) {
+      logWarn('Panel missing — re-creating.');
+      try { createPanelIfMissing(); } catch (e) { logError('recreate panel failed', e); }
+    }
+  });
+  observer.observe(document.documentElement || document, { childList: true, subtree: true });
+
+})();
