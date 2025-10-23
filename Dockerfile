@@ -1,50 +1,48 @@
-# Use PHP 8.2 with Apache
+# ----------------------------
+# Stage 1: Base PHP + Apache
+# ----------------------------
 FROM php:8.2-apache
 
-# Avoid interactive install prompts
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies & SQLite headers
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git unzip zip libsqlite3-dev \
-    libpng-dev libjpeg-dev libfreetype6-dev libzip-dev \
+# Install required system packages and PHP extensions
+RUN apt-get update && apt-get install -y \
+    libpng-dev libjpeg-dev libfreetype6-dev libxml2-dev unzip git curl sqlite3 \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install -j$(nproc) gd pdo pdo_sqlite zip \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Enable Apache rewrite
-RUN a2enmod rewrite
-
-# Fix HTTPS redirect issue behind Render proxy
-RUN echo 'SetEnvIf X-Forwarded-Proto https HTTPS=on' >> /etc/apache2/conf-available/render-https.conf && \
-    a2enconf render-https
-
-# Set Apache DocumentRoot to BookStack's public directory
-ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
-RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/000-default.conf \
-    && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+    && docker-php-ext-install gd pdo pdo_sqlite pdo_mysql xml intl mbstring tokenizer xmlwriter \
+    && a2enmod rewrite headers env \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /var/www/html
 
-# Copy project files into container
+# Copy project files
 COPY . /var/www/html
 
-# Install Composer (from official Composer image)
-COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
-
-# Install dependencies & clear Laravel caches
-RUN composer install --no-dev --optimize-autoloader --no-interaction \
-    && php artisan config:clear || true \
-    && php artisan cache:clear || true \
-    && php artisan route:clear || true \
-    && php artisan view:clear || true
-
-# Set proper permissions for Laravel & BookStack
+# Fix permissions (for Laravel / BookStack)
 RUN chown -R www-data:www-data /var/www/html && chmod -R 755 /var/www/html
 
-# Expose port 80
-EXPOSE 80
+# ----------------------------
+# Step 2: Laravel setup
+# ----------------------------
 
-# Start Apache
+# Ensure storage and bootstrap/cache are writable
+RUN mkdir -p /var/www/html/storage /var/www/html/bootstrap/cache \
+    && chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
+
+# Clear caches to make sure ENV vars are used
+RUN php artisan config:clear && \
+    php artisan cache:clear && \
+    php artisan view:clear
+
+# ----------------------------
+# Apache configuration
+# ----------------------------
+RUN echo "<Directory /var/www/html/public>\n\
+    AllowOverride All\n\
+</Directory>" > /etc/apache2/conf-available/allowoverride.conf \
+    && a2enconf allowoverride
+
+# ----------------------------
+# Expose and run
+# ----------------------------
+EXPOSE 80
 CMD ["apache2-foreground"]
